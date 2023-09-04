@@ -7,6 +7,7 @@ import sys
 import time
 import math
 import matplotlib.pyplot as plt
+import scipy.optimize
  
 def get_world_corners(pattern_size,square_size):
     #pattern_size = (9,6)
@@ -21,14 +22,34 @@ def get_image_corners(img):
     ret, corners = cv2.findChessboardCorners(img_gray,(9,6),None)
     return corners
 
-#Write a function to calculate the homography matrix without using the cv2.findHomography function 
-def get_homography(img_corners,world_corners):
-    A = np.zeros((18,9),np.float32)
-    for i in range(0,18,2):
-        A[i] = [world_corners[int(i/2)][0],world_corners[int(i/2)][1],1,0,0,0,-img_corners[int(i/2)][0]*world_corners[int(i/2)][0],-img_corners[int(i/2)][0]*world_corners[int(i/2)][1],-img_corners[int(i/2)][0]]
-        A[i+1] = [0,0,0,world_corners[int(i/2)][0],world_corners[int(i/2)][1],1,-img_corners[int(i/2)][1]*world_corners[int(i/2)][0],-img_corners[int(i/2)][1]*world_corners[int(i/2)][1],-img_corners[int(i/2)][1]]
-    U,S,V = np.linalg.svd(A)
-    H = V[-1].reshape(3,3)
+def get_homography(img_corners, world_corners):
+    if len(img_corners) != len(world_corners) or len(img_corners) < 4:
+        raise ValueError("Input corners must have the same number of points and at least 4 points.")
+    
+    A = []
+    for i in range(len(img_corners)):
+        img_point = img_corners[i]
+        world_point = world_corners[i]
+
+        print(img_point)
+        print(world_point)
+        
+        if len(img_point) != 2 or len(world_point) != 2:
+            raise ValueError("Each point must be represented as a list of two coordinates (x, y).")
+        
+        img_x, img_y = img_point
+        world_x, world_y = world_point
+        
+        A.append([-world_x, -world_y, -1, 0, 0, 0, img_x * world_x, img_x * world_y, img_x])
+        A.append([0, 0, 0, -world_x, -world_y, -1, img_y * world_x, img_y * world_y, img_y])
+    
+    A = np.array(A)
+    
+    _, _, V = np.linalg.svd(A)
+    h = V[-1, :]
+    
+    H = h.reshape((3, 3))
+    
     return H
 
 #Calculate camera intrinsic matrix K from the homography matrix H
@@ -83,28 +104,77 @@ def get_reprojection_error(img_corners,world_corners,P):
     error = np.linalg.norm(img_corners-world_corners)
     return error
 
+#Write a function to non-linearly optimize the parameters of the camera
+def optimize_parameters(img_corners,world_corners,P):
+    #Calculate the initial reprojection error
+    error = get_reprojection_error(img_corners,world_corners,P)
+    #Initialize the parameters to be optimized
+    params = np.zeros((6,1),np.float32)
+    params[0] = P[0,0]
+    params[1] = P[1,1]
+    params[2] = P[0,2]
+    params[3] = P[1,2]
+    params[4] = P[0,1]
+    params[5] = P[0,2]
+    #Define the function to be optimized
+    def func(params):
+        P[0,0] = params[0]
+        P[1,1] = params[1]
+        P[0,2] = params[2]
+        P[1,2] = params[3]
+        P[0,1] = params[4]
+        P[1,0] = params[5]
+        return get_reprojection_error(img_corners,world_corners,P)
+    #Optimize the parameters
+    params = scipy.optimize.minimize(func,params,method='Nelder-Mead')
+    #Update the parameters
+    P[0,0] = params[0]
+    P[1,1] = params[1]
+    P[0,2] = params[2]
+    P[1,2] = params[3]
+    P[0,1] = params[4]
+    P[1,0] = params[5]
+    return P
 
+#Write a function to inverse warp the image
+def inverse_warp(img,P):
+    #Initialize the warped image
+    warped_img = np.zeros(img.shape,np.uint8)
+    #Inverse warp the image
+    for i in range(img.shape[0]):
+        for j in range(img.shape[1]):
+            #Calculate the pixel coordinates in the original image
+            img_coords = np.dot(np.linalg.inv(P),np.array([i,j,1]))
+            img_coords = img_coords/img_coords[2]
+            #Check if the pixel coordinates lie within the image
+            if img_coords[0]>=0 and img_coords[0]<img.shape[0] and img_coords[1]>=0 and img_coords[1]<img.shape[1]:
+                warped_img[i,j] = img[int(img_coords[0]),int(img_coords[1])]
+    return warped_img
 
-
+#Write a function to visualize the results
+def visualize_results(img,img_corners,warped_img):
+    #Draw the detected corners on the original image
+    for i in range(54):
+        cv2.circle(img,(int(img_corners[i,0]),int(img_corners[i,1])),3,(0,0,255),-1)
+    #Display the original image
+    cv2.imshow('img',img)
+    #Display the warped image
+    cv2.imshow('warped_img',warped_img)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 #Write a main function to read the image to be calibrated and the image of the chessboard
 def main():
-    #Read the image of the chessboard in pdf form
-
+    
+    img = cv2.imread('/Users/rohin/Desktop/WPI_Fall_ 2022_Academics/RBE_549/HW1/Calibration_Imgs/IMG_20170209_042606.jpg')
+    img_corners = get_image_corners(img)
     world_corners = get_world_corners((9,6),21.5)
-
-    print(world_corners)
-
-    # img = cv2.imread('/Users/rohin/Desktop/WPI_Fall_ 2022_Academics/RBE_549/HW1/checkerboardPattern_page-0001.jpg')
-    # cv2.imshow('img',img)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-
-    # #Read the image to be calibrated
-    # img2 = cv2.imread('/Users/rohin/Desktop/WPI_Fall_ 2022_Academics/RBE_549/HW1/Calibration_Imgs/IMG_20170209_042606.jpg')
-    # cv2.imshow('img',img2)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
+    H = get_homography(img_corners,world_corners)
+    K = get_camera_matrix(H)
+    P = get_camera_parameters(H,K)
+    P = optimize_parameters(img_corners,world_corners,P)
+    warped_img = inverse_warp(img,P)
+    visualize_results(img,img_corners,warped_img)
 
 
 if __name__ == '__main__':
